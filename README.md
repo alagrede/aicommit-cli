@@ -1,4 +1,4 @@
-# aicommit
+# aicommit-cli
 
 > AI-powered git commit messages, in pure Bash, with zero runtime dependencies beyond `curl` and `python3`.
 
@@ -30,7 +30,7 @@ When you run `git commit`, your editor opens with a draft message already writte
 ### 1. Install the script in your `$PATH`
 
 ```bash
-curl -o /usr/local/bin/aicommit https://raw.githubusercontent.com/alagrede/aicommit/main/aicommit
+curl -o /usr/local/bin/aicommit https://raw.githubusercontent.com/alagrede/aicommit-cli/main/aicommit
 chmod +x /usr/local/bin/aicommit
 ```
 
