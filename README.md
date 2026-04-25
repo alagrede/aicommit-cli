@@ -6,6 +6,8 @@
 
 When you run `git commit`, your editor opens with a draft message already written. Edit it, save, done.
 
+![demo](demo.gif)
+
 ## Features
 
 - **Pure Bash** — no Node, no virtualenv, no package manager. Just drop the script in your `$PATH`.
