@@ -6,7 +6,7 @@
 
 When you run `git commit`, your editor opens with a draft message already written. Edit it, save, done.
 
-![demo](demo.gif)
+![demo](demo-aicommit.gif)
 
 ## Features
 
