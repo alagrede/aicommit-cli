@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# aicommit — Génère un message de commit via IA à partir des changements stagés.
+# Peut s'utiliser de 3 façons :
+#   1. aicommit install         → installe le hook prepare-commit-msg dans le repo courant
+#   2. aicommit uninstall       → retire le hook
+#   3. aicommit inspect         → affiche les commits locaux non pushés
+#   4. aicommit generate        → génère un message à partir des changements stagés (stdout)
+#   5. aicommit (sans arg)      → équivalent à `generate`
+#
+# Quand il est appelé en tant que hook (prepare-commit-msg), il reçoit en argument
+# le chemin du fichier .git/COMMIT_EDITMSG et y écrit le message généré.
+
+set -euo pipefail
+
+# ─── Localisation du fichier de conf ──────────────────────────────────────────
+# Priorité : ./.aicommitrc  >  $XDG_CONFIG_HOME/aicommit/config  >  ~/.aicommitrc
+find_config() {
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$repo_root" ] && [ -f "$repo_root/.aicommitrc" ]; then
+    echo "$repo_root/.aicommitrc"; return
+  fi
+  local xdg="${XDG_CONFIG_HOME:-$HOME/.config}/aicommit/config"
+  if [ -f "$xdg" ]; then echo "$xdg"; return; fi
+  if [ -f "$HOME/.aicommitrc" ]; then echo "$HOME/.aicommitrc"; return; fi
+  echo ""
+}
+
+load_config() {
+  # Valeurs par défaut
+  PROVIDER="claude"
+  MODEL="claude-opus-4-5"
+  MAX_TOKENS="500"
+  STYLE_RULES="Use Conventional Commits format (type(scope): subject). Subject in imperative mood, lowercase, no period, max 72 chars. Add a blank line then a brief body explaining the why."
+  EXTRA_INSTRUCTIONS=""
+  LANGUAGE="english"
+  INCLUDE_DIFF_LINES="400"
+
+  local cfg; cfg="$(find_config)"
+  if [ -n "$cfg" ]; then
+    # shellcheck source=/dev/null
+    source "$cfg"
+    CONFIG_FILE="$cfg"
+  else
+    CONFIG_FILE=""
+  fi
+
+  # Variables d'environnement >> fichier de conf (utile pour CI / override ponctuel)
+  PROVIDER="${AICOMMIT_PROVIDER:-$PROVIDER}"
+  MODEL="${AICOMMIT_MODEL:-$MODEL}"
+}
+
+# ─── Inspection des commits non pushés ────────────────────────────────────────
+inspect_unpushed() {
+  local branch upstream
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+
+  echo "── Branch: $branch"
+  if [ -z "$upstream" ]; then
+    echo "── No upstream configured. All local commits considered unpushed:"
+    git log --oneline --decorate || true
+    return
+  fi
+  echo "── Upstream: $upstream"
+  local count
+  count="$(git rev-list --count "$upstream..HEAD")"
+  echo "── Unpushed commits: $count"
+  if [ "$count" -gt 0 ]; then
+    git log --oneline --decorate "$upstream..HEAD"
+    echo
+    echo "── Files changed:"
+    git diff --stat "$upstream..HEAD"
+  fi
+}
+
+# ─── Échappement JSON minimaliste (pour stuffer le diff dans un payload) ──────
+json_escape() {
+  # Lit stdin, sort une chaîne JSON-safe (sans les guillemets autour)
+  python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read())[1:-1])' 2>/dev/null \
+    || jq -Rs . <<<"$(cat)" | sed 's/^"//;s/"$//'
+}
+
+# ─── Construction du prompt ───────────────────────────────────────────────────
+build_prompt() {
+  local diff_text="$1"
+  local staged_files="$2"
+
+  cat <<EOF
+You are a git commit message generator. Generate a single commit message based on the staged changes below.
+
+OUTPUT RULES:
+- Output ONLY the commit message. No preamble, no explanation, no markdown code fences.
+- Language: $LANGUAGE
+- $STYLE_RULES
+${EXTRA_INSTRUCTIONS:+- $EXTRA_INSTRUCTIONS}
+
+STAGED FILES:
+$staged_files
+
+DIFF (truncated to $INCLUDE_DIFF_LINES lines):
+\`\`\`diff
+$diff_text
+\`\`\`
+EOF
+}
+
+# ─── Providers ────────────────────────────────────────────────────────────────
+call_claude() {
+  local prompt="$1"
+  : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is not set}"
+  local payload
+  payload=$(cat <<EOF
+{
+  "model": "$MODEL",
+  "max_tokens": $MAX_TOKENS,
+  "messages": [{"role": "user", "content": "$(printf '%s' "$prompt" | json_escape)"}]
+}
+EOF
+)
+  curl -sS https://api.anthropic.com/v1/messages \
+    -H "x-api-key: $ANTHROPIC_API_KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "content-type: application/json" \
+    -d "$payload" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["content"][0]["text"])'
+}
+
+call_openai() {
+  local prompt="$1"
+  : "${OPENAI_API_KEY:?OPENAI_API_KEY is not set}"
+  local payload
+  payload=$(cat <<EOF
+{
+  "model": "$MODEL",
+  "max_tokens": $MAX_TOKENS,
+  "messages": [{"role": "user", "content": "$(printf '%s' "$prompt" | json_escape)"}]
+}
+EOF
+)
+  curl -sS https://api.openai.com/v1/chat/completions \
+    -H "Authorization: Bearer $OPENAI_API_KEY" \
+    -H "content-type: application/json" \
+    -d "$payload" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["choices"][0]["message"]["content"])'
+}
+
+call_ollama() {
+  local prompt="$1"
+  local host="${OLLAMA_HOST:-http://localhost:11434}"
+  local payload
+  payload=$(cat <<EOF
+{
+  "model": "$MODEL",
+  "stream": false,
+  "prompt": "$(printf '%s' "$prompt" | json_escape)"
+}
+EOF
+)
+  curl -sS "$host/api/generate" \
+    -H "content-type: application/json" \
+    -d "$payload" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["response"])'
+}
+
+# ─── Génération du message ────────────────────────────────────────────────────
+generate_message() {
+  local staged_files diff_text
+  staged_files="$(git diff --cached --name-status)"
+  if [ -z "$staged_files" ]; then
+    echo "Error: no staged changes. Run 'git add' first." >&2
+    return 1
+  fi
+  diff_text="$(git diff --cached --no-color | head -n "$INCLUDE_DIFF_LINES")"
+
+  local prompt; prompt="$(build_prompt "$diff_text" "$staged_files")"
+
+  case "$PROVIDER" in
+    claude)  call_claude "$prompt" ;;
+    openai)  call_openai "$prompt" ;;
+    ollama)  call_ollama "$prompt" ;;
+    *) echo "Error: unknown provider '$PROVIDER' (use claude, openai, or ollama)" >&2; return 1 ;;
+  esac
+}
+
+# ─── Mode hook (prepare-commit-msg) ───────────────────────────────────────────
+# Appelé par git avec : $1=path/to/COMMIT_EDITMSG  $2=source  $3=sha
+run_as_hook() {
+  local msg_file="$1"
+  local source="${2:-}"
+
+  # On ne génère un message que si l'utilisateur n'a rien fourni
+  # (pas de -m, pas de merge, pas de squash, pas de commit --amend avec message existant)
+  case "$source" in
+    message|template|merge|squash|commit) return 0 ;;
+  esac
+
+  # Ne rien faire s'il n'y a rien de stagé
+  if git diff --cached --quiet; then
+    return 0
+  fi
+
+  # Si un message non-vide existe déjà (hors commentaires), on ne l'écrase pas
+  if grep -v '^\s*#' "$msg_file" 2>/dev/null | grep -q '[^[:space:]]'; then
+    return 0
+  fi
+
+  echo "[aicommit] generating commit message via $PROVIDER ($MODEL)..." >&2
+  local generated
+  if ! generated="$(generate_message 2>/dev/null)"; then
+    echo "[aicommit] generation failed, falling back to default editor" >&2
+    return 0
+  fi
+
+  # On préserve les commentaires git existants (lignes # ...) en les remettant après
+  local existing_comments
+  existing_comments="$(grep '^\s*#' "$msg_file" 2>/dev/null || true)"
+  {
+    printf '%s\n' "$generated"
+    printf '\n'
+    [ -n "$existing_comments" ] && printf '%s\n' "$existing_comments"
+  } > "$msg_file"
+}
+
+# ─── Installation du hook ─────────────────────────────────────────────────────
+install_hook() {
+  local repo_root hooks_dir target self
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "Error: not in a git repository" >&2; exit 1; }
+  hooks_dir="$(git rev-parse --git-path hooks)"
+  mkdir -p "$hooks_dir"
+  target="$hooks_dir/prepare-commit-msg"
+  self="$(realpath "$0")"
+
+  cat > "$target" <<EOF
+#!/usr/bin/env bash
+# Auto-generated by aicommit
+exec "$self" --hook "\$@"
+EOF
+  chmod +x "$target"
+
+  # Crée un .aicommitrc d'exemple s'il n'existe pas
+  if [ ! -f "$repo_root/.aicommitrc" ]; then
+    cat > "$repo_root/.aicommitrc" <<'EOF'
+# aicommit configuration (sourced as bash)
+
+# Provider: claude | openai | ollama
+PROVIDER="claude"
+
+# Model name (depends on provider)
+MODEL="claude-opus-4-5"
+# MODEL="gpt-4o-mini"          # for openai
+# MODEL="llama3.1"             # for ollama
+
+# Output language
+LANGUAGE="english"
+
+# Max tokens for the generated message
+MAX_TOKENS="500"
+
+# How many lines of the diff to send to the model
+INCLUDE_DIFF_LINES="400"
+
+# Formatting rules (will be passed verbatim into the prompt)
+STYLE_RULES="Use Conventional Commits format (type(scope): subject). Subject in imperative mood, lowercase, no period, max 72 chars. Add a blank line then a brief body explaining the WHY of the change, wrapped at 72 chars."
+
+# Optional extra instructions appended to the prompt
+EXTRA_INSTRUCTIONS="If the change is trivial (typo, formatting), keep it to a single line."
+EOF
+    echo "Created example config: $repo_root/.aicommitrc"
+  fi
+
+  # Ajoute .aicommitrc au .gitignore s'il n'y est pas déjà
+  local gitignore="$repo_root/.gitignore"
+  if [ ! -f "$gitignore" ] || ! grep -qxF '.aicommitrc' "$gitignore"; then
+    [ -f "$gitignore" ] && [ -n "$(tail -c1 "$gitignore")" ] && printf '\n' >> "$gitignore"
+    printf '.aicommitrc\n' >> "$gitignore"
+    echo "Added .aicommitrc to $gitignore"
+  fi
+
+  echo "Installed hook: $target"
+  echo "Don't forget to export your API key (e.g. ANTHROPIC_API_KEY=...)"
+}
+
+uninstall_hook() {
+  local hooks_dir target
+  hooks_dir="$(git rev-parse --git-path hooks)"
+  target="$hooks_dir/prepare-commit-msg"
+  if [ -f "$target" ] && grep -q "Auto-generated by aicommit" "$target"; then
+    rm "$target"; echo "Removed $target"
+  else
+    echo "No aicommit hook found at $target"
+  fi
+}
+
+# ─── Dispatch ─────────────────────────────────────────────────────────────────
+load_config
+
+case "${1:-generate}" in
+  --hook)        shift; run_as_hook "$@" ;;
+  install)       install_hook ;;
+  uninstall)     uninstall_hook ;;
+  inspect)       inspect_unpushed ;;
+  generate|"")   generate_message ;;
+  config)        echo "Config file: ${CONFIG_FILE:-<none>}"; echo "Provider: $PROVIDER"; echo "Model: $MODEL" ;;
+  -h|--help|help)
+    cat <<EOF
+aicommit — AI-powered commit messages
+
+Usage:
+  aicommit install      Install the prepare-commit-msg hook in current repo
+  aicommit uninstall    Remove the hook
+  aicommit inspect      Show local commits not yet pushed to upstream
+  aicommit generate     Print a generated message for currently staged changes
+  aicommit config       Show effective config
+  aicommit help         This help
+
+Config file (first match wins):
+  ./.aicommitrc
+  \$XDG_CONFIG_HOME/aicommit/config
+  ~/.aicommitrc
+
+Required env (per provider):
+  claude  → ANTHROPIC_API_KEY
+  openai  → OPENAI_API_KEY
+  ollama  → (optional) OLLAMA_HOST, default http://localhost:11434
+EOF
+    ;;
+  *) echo "Unknown command: $1 (try 'aicommit help')" >&2; exit 1 ;;
+esac
