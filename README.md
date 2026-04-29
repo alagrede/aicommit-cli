@@ -29,15 +29,31 @@ When you run `git commit`, your editor opens with a draft message already writte
 
 ### 1. Install the script in your `$PATH`
 
+Install into `~/bin/` (a user-owned directory, no `sudo` required):
+
 ```bash
-curl -o /usr/local/bin/aicommit https://raw.githubusercontent.com/alagrede/aicommit-cli/main/aicommit
-chmod +x /usr/local/bin/aicommit
+mkdir -p ~/bin
+curl -o ~/bin/aicommit https://raw.githubusercontent.com/alagrede/aicommit-cli/main/aicommit
+chmod +x ~/bin/aicommit
 ```
 
 Or, if you cloned the repo:
 
 ```bash
-sudo install -m 755 aicommit /usr/local/bin/aicommit
+mkdir -p ~/bin
+install -m 755 aicommit ~/bin/aicommit
+```
+
+Then make sure `~/bin` is in your `$PATH`. Add the following line to your shell rc file (`~/.zshrc`, `~/.bashrc`, etc.):
+
+```bash
+export PATH="$HOME/bin:$PATH"
+```
+
+Reload your shell (`source ~/.zshrc`) and verify with:
+
+```bash
+which aicommit   # should print /Users/you/bin/aicommit
 ```
 
 ### 2. Set your API key
@@ -202,7 +218,7 @@ aicommit uninstall
 Globally:
 
 ```bash
-sudo rm /usr/local/bin/aicommit
+rm ~/bin/aicommit
 ```
 
 ## Privacy & cost
