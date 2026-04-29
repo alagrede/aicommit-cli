@@ -13,13 +13,8 @@
 set -euo pipefail
 
 # ─── Localisation du fichier de conf ──────────────────────────────────────────
-# Priorité : ./.aicommitrc  >  $XDG_CONFIG_HOME/aicommit/config  >  ~/.aicommitrc
+# Priorité : $XDG_CONFIG_HOME/aicommit/config  >  ~/.aicommitrc
 find_config() {
-  local repo_root
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  if [ -n "$repo_root" ] && [ -f "$repo_root/.aicommitrc" ]; then
-    echo "$repo_root/.aicommitrc"; return
-  fi
   local xdg="${XDG_CONFIG_HOME:-$HOME/.config}/aicommit/config"
   if [ -f "$xdg" ]; then echo "$xdg"; return; fi
   if [ -f "$HOME/.aicommitrc" ]; then echo "$HOME/.aicommitrc"; return; fi
@@ -224,8 +219,8 @@ run_as_hook() {
 
 # ─── Installation du hook ─────────────────────────────────────────────────────
 install_hook() {
-  local repo_root hooks_dir target self
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  local hooks_dir target self
+  git rev-parse --show-toplevel >/dev/null 2>&1 || {
     echo "Error: not in a git repository" >&2; exit 1; }
   hooks_dir="$(git rev-parse --git-path hooks)"
   mkdir -p "$hooks_dir"
@@ -239,9 +234,9 @@ exec "$self" --hook "\$@"
 EOF
   chmod +x "$target"
 
-  # Crée un .aicommitrc d'exemple s'il n'existe pas
-  if [ ! -f "$repo_root/.aicommitrc" ]; then
-    cat > "$repo_root/.aicommitrc" <<'EOF'
+  # Crée ~/.aicommitrc d'exemple s'il n'existe pas
+  if [ ! -f "$HOME/.aicommitrc" ]; then
+    cat > "$HOME/.aicommitrc" <<'EOF'
 # aicommit configuration (sourced as bash)
 
 # Provider: claude | openai | ollama
@@ -267,15 +262,7 @@ STYLE_RULES="Use Conventional Commits format (type(scope): subject). Subject in 
 # Optional extra instructions appended to the prompt
 EXTRA_INSTRUCTIONS="If the change is trivial (typo, formatting), keep it to a single line."
 EOF
-    echo "Created example config: $repo_root/.aicommitrc"
-  fi
-
-  # Ajoute .aicommitrc au .gitignore s'il n'y est pas déjà
-  local gitignore="$repo_root/.gitignore"
-  if [ ! -f "$gitignore" ] || ! grep -qxF '.aicommitrc' "$gitignore"; then
-    [ -f "$gitignore" ] && [ -n "$(tail -c1 "$gitignore")" ] && printf '\n' >> "$gitignore"
-    printf '.aicommitrc\n' >> "$gitignore"
-    echo "Added .aicommitrc to $gitignore"
+    echo "Created example config: $HOME/.aicommitrc"
   fi
 
   echo "Installed hook: $target"
@@ -316,7 +303,6 @@ Usage:
   aicommit help         This help
 
 Config file (first match wins):
-  ./.aicommitrc
   \$XDG_CONFIG_HOME/aicommit/config
   ~/.aicommitrc
 

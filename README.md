@@ -12,8 +12,8 @@ When you run `git commit`, your editor opens with a draft message already writte
 
 - **Pure Bash** — no Node, no virtualenv, no package manager. Just drop the script in your `$PATH`.
 - **Multi-provider** — Claude (Anthropic), OpenAI, or Ollama (local). Switch with one config line.
-- **Configurable formatting rules** — your `.aicommitrc` defines the style, language, and any extra instructions passed to the model.
-- **Per-repo or global config** — repo-level `.aicommitrc` overrides global `~/.aicommitrc`.
+- **Configurable formatting rules** — your `~/.aicommitrc` defines the style, language, and any extra instructions passed to the model.
+- **Global config** — a single `~/.aicommitrc` (or `$XDG_CONFIG_HOME/aicommit/config`) applies to every repo.
 - **Non-intrusive hook** — only generates a message when you didn't pass `-m`, didn't `--amend` a non-empty message, and aren't in a merge/squash. Otherwise it stays out of your way.
 - **Inspect helper** — `aicommit inspect` shows local commits not yet pushed to upstream.
 
@@ -62,10 +62,10 @@ cd path/to/your/repo
 aicommit install
 ```
 
-This creates two things:
+This creates:
 
 - `.git/hooks/prepare-commit-msg` — the hook itself
-- `.aicommitrc` — an example config file you can commit (or `.gitignore`) as you wish
+- `~/.aicommitrc` — an example global config file (only created the first time, if it doesn't exist yet)
 
 ## Usage
 
@@ -98,13 +98,12 @@ aicommit help       # full help
 
 The script looks for a config file in this order (first match wins):
 
-1. `./.aicommitrc` (in the repo root)
-2. `$XDG_CONFIG_HOME/aicommit/config` (typically `~/.config/aicommit/config`)
-3. `~/.aicommitrc`
+1. `$XDG_CONFIG_HOME/aicommit/config` (typically `~/.config/aicommit/config`)
+2. `~/.aicommitrc`
 
 The file is sourced as Bash, so you can use any shell expression.
 
-### Example `.aicommitrc`
+### Example `~/.aicommitrc`
 
 ```bash
 # Provider: claude | openai | ollama
@@ -155,9 +154,9 @@ For one-off overrides (CI, scripts, etc.) you can set:
 
 ## Tips
 
-### Per-team, per-repo config
+### Per-user config
 
-Commit your `.aicommitrc` into the repo so every contributor gets the same formatting rules. The hook itself is per-clone (lives in `.git/hooks/`), so each contributor still runs `aicommit install` once.
+Your `~/.aicommitrc` applies to every repo on your machine. The hook itself is per-clone (lives in `.git/hooks/`), so each contributor still runs `aicommit install` once per repo.
 
 ### Use a cheaper model for trivial changes
 
